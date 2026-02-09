@@ -42,7 +42,7 @@ The human owner retains full control of the Safe while the agent can only execut
 ## Installation
 
 ```bash
-cd scripts
+cd claw-wallet/scripts
 npm install
 ```
 
@@ -51,7 +51,7 @@ npm install
 1. Initialize the wallet (deploys Safe + Roles):
 
 ```bash
-node scripts/initialize.js --owner <YOUR_WALLET_ADDRESS>
+node claw-wallet/scripts/initialize.js --owner <YOUR_WALLET_ADDRESS>
 ```
 
 2. Fund the agent address with ~0.001 ETH for gas (address shown in output)
@@ -66,26 +66,26 @@ node scripts/initialize.js --owner <YOUR_WALLET_ADDRESS>
 
 ```bash
 # ETH balance
-node scripts/balance.js
+node claw-wallet/scripts/balance.js
 
 # Specific token
-node scripts/balance.js --token USDC
+node claw-wallet/scripts/balance.js --token USDC
 
 # All verified tokens
-node scripts/balance.js --all
+node claw-wallet/scripts/balance.js --all
 ```
 
 ### Swap Tokens
 
 ```bash
 # Get quote
-node scripts/swap.js --from ETH --to USDC --amount 0.1
+node claw-wallet/scripts/swap.js --from ETH --to USDC --amount 0.1
 
 # Execute swap
-node scripts/swap.js --from ETH --to USDC --amount 0.1 --execute
+node claw-wallet/scripts/swap.js --from ETH --to USDC --amount 0.1 --execute
 
 # Swap by address (for tokens not in verified list)
-node scripts/swap.js --from USDC --to 0xa1832f7f4e534ae557f9b5ab76de54b1873e498b --amount 100 --execute
+node claw-wallet/scripts/swap.js --from USDC --to 0xa1832f7f4e534ae557f9b5ab76de54b1873e498b --amount 100 --execute
 ```
 
 ### Custom RPC
@@ -93,8 +93,8 @@ node scripts/swap.js --from USDC --to 0xa1832f7f4e534ae557f9b5ab76de54b1873e498b
 All scripts support `--rpc` flag for custom RPC endpoints:
 
 ```bash
-node scripts/balance.js --rpc https://base.llamarpc.com
-node scripts/swap.js --from ETH --to USDC --amount 0.1 --rpc https://base.llamarpc.com
+node claw-wallet/scripts/balance.js --rpc https://base.llamarpc.com
+node claw-wallet/scripts/swap.js --from ETH --to USDC --amount 0.1 --rpc https://base.llamarpc.com
 ```
 
 ## Verified Tokens
@@ -155,7 +155,7 @@ This skill is designed to work with [OpenClaw](https://openclaw.ai) agents. The 
 - Execute swaps after user confirmation
 - Protect users from scam tokens
 
-See [SKILL.md](./SKILL.md) for the skill specification.
+See [SKILL.md](./claw-wallet/SKILL.md) for the skill specification.
 
 ## License
 
