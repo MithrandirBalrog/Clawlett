@@ -27,12 +27,14 @@ Protected tokens can ONLY resolve to verified Base Mainnet addresses:
 
 | Token | Verified Address |
 |-------|-----------------|
-| ETH/WETH | `0x4200000000000000000000000000000000000006` |
+| ETH | Native ETH (use `0x0000000000000000000000000000000000000000` for swaps) |
+| WETH | `0x4200000000000000000000000000000000000006` |
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 | USDT | `0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2` |
 | DAI | `0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb` |
 | AERO | `0x940181a94A35A4569E4529A3CDfB74e38FD98631` |
 | cbBTC | `0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf` |
+| BID | `0xa1832f7F4e534aE557f9B5AB76dE54B1873e498B` |
 
 If a scam token impersonates these symbols, the agent will detect and warn.
 
@@ -152,9 +154,9 @@ Scripts read from `config/wallet.json` (configured for Base Mainnet):
 
 | Contract | Address | Description |
 |----------|---------|-------------|
-| Aerodrome Universal Router | `0x6Cb442acF35158D5eDa88fe602221b67B400Be3e` | All swaps (V2 + CL) |
-| ZodiacHelpers | `0xE522Ad9eE9748533a31925a7D0C4A8F7318AF678` | Token approvals via delegatecall |
 | Safe Singleton | `0x3E5c63644E683549055b9Be8653de26E0B4CD36E` | Safe L2 impl |
+| Aerodrome Universal Router | `0x6Df1c91424F79E40E33B1A48F0687B666bE71075` | All swaps (V2 + CL) |
+| ZodiacHelpers | `0xc235D2475E4424F277B53D19724E2453a8686C54` | Token approvals + swaps via delegatecall |
 | Safe Factory | `0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2` | Safe deployer |
 | Roles Singleton | `0x9646fDAD06d3e24444381f44362a3B0eB343D337` | Zodiac Roles |
 | Module Factory | `0x000000000000aDdB49795b0f9bA5BC298cDda236` | Module deployer |

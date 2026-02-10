@@ -28,7 +28,7 @@ const DEFAULT_RPC_URL = 'https://mainnet.base.org'
 // VERIFIED TOKENS - Safeguard against scam tokens
 // ============================================================================
 const VERIFIED_TOKENS = {
-    'ETH': '0x4200000000000000000000000000000000000006',
+    'ETH': '0x0000000000000000000000000000000000000000',  // Native ETH
     'WETH': '0x4200000000000000000000000000000000000006',
     'USDC': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     'USDT': '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2',
@@ -51,7 +51,7 @@ const TOKEN_ALIASES = {
     'TETHER': 'USDT',
 }
 
-const PROTECTED_SYMBOLS = ['ETH', 'WETH', 'USDC', 'USDT', 'DAI', 'USDS', 'AERO', 'cbBTC']
+const PROTECTED_SYMBOLS = ['ETH', 'WETH', 'USDC', 'USDT', 'DAI', 'USDS', 'AERO', 'cbBTC', 'BID']
 
 // Contracts
 const CONTRACTS = {
@@ -166,7 +166,7 @@ async function getQuote(provider, tokenIn, tokenOut, amountIn, safeAddress, slip
             tokenOut: tokenOut.address,
             amountIn: amountIn.toString(),
             recipient: safeAddress,
-            slippage: slippage || 1,
+            slippage: slippage || 0.05,
             chainId: '8453',
         }),
     })
@@ -326,8 +326,9 @@ async function main() {
 
     // Check balance
     const safeAddress = config.safe
+    const NATIVE_ETH = '0x0000000000000000000000000000000000000000'
     let balance
-    if (tokenIn.address.toLowerCase() === CONTRACTS.WETH.toLowerCase()) {
+    if (tokenIn.address.toLowerCase() === NATIVE_ETH || tokenIn.address.toLowerCase() === CONTRACTS.WETH.toLowerCase()) {
         balance = await provider.getBalance(safeAddress)
     } else {
         const tokenContract = new ethers.Contract(tokenIn.address, ERC20_ABI, provider)
@@ -380,8 +381,8 @@ async function main() {
     const wallet = new ethers.Wallet(privateKey, provider)
     const roles = new ethers.Contract(config.roles, ROLES_ABI, wallet)
 
-    const isETHIn = tokenIn.address.toLowerCase() === CONTRACTS.WETH.toLowerCase()
-    const isETHOut = tokenOut.address.toLowerCase() === CONTRACTS.WETH.toLowerCase()
+    const isETHIn = tokenIn.address.toLowerCase() === NATIVE_ETH
+    const isETHOut = tokenOut.address.toLowerCase() === NATIVE_ETH
 
     // Build executeSwap calldata for ApprovalHelper (delegatecall)
     if (!quote.calldata) {
