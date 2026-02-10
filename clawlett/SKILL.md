@@ -1,4 +1,4 @@
-# Claw Wallet
+# Clawlett
 
 Secure token swaps via Aerodrome on **Base Mainnet**, powered by Safe + Zodiac Roles.
 

@@ -11,7 +11,7 @@ Contributions are welcome! Here's how to get started.
 ## Development
 
 ```bash
-cd claw-wallet/scripts
+cd clawlett/scripts
 npm install
 ```
 
