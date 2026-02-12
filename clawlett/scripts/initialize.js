@@ -10,7 +10,8 @@
  * 2. Deploy Safe with agent as initial owner
  * 3. Deploy Zodiac Roles module
  * 4. Configure everything via MultiSend (enable module + permissions)
- * 5. Transfer ownership to human owner
+ * 5. Register on ERC-8004 Identity Registry
+ * 6. Register with backend API
  *
  * Usage: node initialize.js --owner 0x123...
  */
@@ -36,7 +37,9 @@ const CONTRACTS = {
     RolesSingleton: '0x9646fDAD06d3e24444381f44362a3B0eB343D337',
     ModuleProxyFactory: '0x000000000000aDdB49795b0f9bA5BC298cDda236',
     AeroUniversalRouter: '0x6Df1c91424F79E40E33B1A48F0687B666bE71075',
-    ZodiacHelpers: '0xc235D2475E4424F277B53D19724E2453a8686C54',
+    ZodiacHelpers: '0x9699a24346464F1810a2822CEEE89f715c65F629',
+    IdentityRegistry: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
+    CNS: '0x299319e0BC8d67e11AD8b17D4d5002033874De3a',
 }
 
 // ABIs
@@ -72,6 +75,34 @@ const MULTISEND_ABI = [
     'function multiSend(bytes transactions) payable',
 ]
 
+const IDENTITY_REGISTRY_ABI = [
+    'function register(string agentURI) returns (uint256 agentId)',
+    'function transferFrom(address from, address to, uint256 tokenId)',
+    'function ownerOf(uint256 tokenId) view returns (address)',
+    'event Registered(uint256 indexed agentId, string agentURI, address indexed owner)',
+]
+
+const CNS_ABI = [
+    {
+        type: 'function', name: 'register', stateMutability: 'payable',
+        inputs: [{
+            name: '_signature', type: 'tuple',
+            components: [
+                { name: 'signature', type: 'bytes' },
+                { name: 'data', type: 'bytes' },
+                { name: 'expiresAt', type: 'uint256' },
+            ],
+        }],
+        outputs: [{ name: 'tokenId', type: 'uint256' }],
+    },
+    'function fee() view returns (uint256)',
+    'function isNameAvailable(string _name) view returns (bool)',
+    'function balanceOf(address owner) view returns (uint256)',
+    'function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)',
+    'function tokenName(uint256 _tokenId) view returns (string)',
+    'event NameRegistered(address indexed owner, uint256 indexed tokenId, string name)',
+]
+
 // Role key for wallet operations
 const ROLE_KEY = ethers.keccak256(ethers.toUtf8Bytes('WalletSwapper'))
 
@@ -89,7 +120,7 @@ const STEPS = {
     SAFE_DEPLOYED: 'safe_deployed',
     ROLES_DEPLOYED: 'roles_deployed',
     CONFIGURED: 'configured',
-    REGISTERED: 'registered',
+    ERC8004_REGISTERED: 'erc8004_registered',
     COMPLETE: 'complete',
 }
 
@@ -97,6 +128,7 @@ function parseArgs() {
     const args = process.argv.slice(2)
     const result = {
         owner: null,
+        name: null,
         configDir: process.env.WALLET_CONFIG_DIR || path.join(__dirname, '..', 'config'),
         rpc: process.env.BASE_RPC_URL || DEFAULT_RPC_URL,
     }
@@ -106,6 +138,10 @@ function parseArgs() {
             case '--owner':
             case '-o':
                 result.owner = args[++i]
+                break
+            case '--name':
+            case '-n':
+                result.name = args[++i]
                 break
             case '--config-dir':
             case '-c':
@@ -127,10 +163,11 @@ function parseArgs() {
 
 function printHelp() {
     console.log(`
-Usage: node initialize.js --owner <OWNER_ADDRESS>
+Usage: node initialize.js --owner <OWNER_ADDRESS> --name <AGENT_NAME>
 
 Arguments:
   --owner, -o      Owner wallet address (will be sole Safe owner after setup)
+  --name, -n       Unique agent name for CNS (Clawlett Name Service)
   --config-dir, -c Config directory (default: ../config)
   --rpc, -r        RPC URL (default: ${DEFAULT_RPC_URL})
 
@@ -232,6 +269,60 @@ async function registerAgent(agentWallet, jwt, agentData) {
     return { ...result, cookies: cookieString }
 }
 
+// Backend auth — GET challenge, sign, POST to get session cookies
+async function authenticateAgent(agentWallet) {
+    // Step 1: Get challenge
+    const challengeRes = await fetch(
+        `${API_BASE_URL}/api/auth/wallet?wallet=${agentWallet.address.toLowerCase()}`
+    )
+    const challengeData = await challengeRes.json()
+    if (!challengeRes.ok) {
+        throw new Error(challengeData.error || 'Failed to get auth challenge')
+    }
+
+    // Step 2: Sign challenge and authenticate
+    const message = challengeData.message || getMessageFromJwt(challengeData.jwt)
+    const signature = await agentWallet.signMessage(message)
+
+    const authRes = await fetch(`${API_BASE_URL}/api/auth/wallet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            wallet: agentWallet.address.toLowerCase(),
+            signature,
+            jwt: challengeData.jwt,
+        }),
+    })
+
+    const authData = await authRes.json()
+    if (!authRes.ok) {
+        throw new Error(authData.error || 'Authentication failed')
+    }
+
+    const cookies = authRes.headers.getSetCookie?.() || []
+    const cookieString = cookies.map(c => c.split(';')[0]).join('; ')
+    return cookieString
+}
+
+// CNS — request signature from backend, then register on-chain
+async function getCnsSignature(cookies, name) {
+    const res = await fetch(`${API_BASE_URL}/api/cns/signature`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Cookie': cookies,
+        },
+        body: JSON.stringify({ name, chainId: String(CHAIN_ID) }),
+    })
+
+    const data = await res.json()
+    if (!res.ok) {
+        throw new Error(data.error || 'Failed to get CNS signature')
+    }
+
+    return data
+}
+
 function saveConfig(configDir, config) {
     const configPath = path.join(configDir, 'wallet.json')
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
@@ -281,13 +372,14 @@ async function execSafeTransaction(safe, to, value, data, operation, signer) {
 async function main() {
     const args = parseArgs()
 
-    if (!args.owner) {
-        console.error('Error: --owner is required')
+    if (!args.owner || !args.name) {
+        console.error('Error: --owner and --name are required')
         printHelp()
         process.exit(1)
     }
 
     const owner = ethers.getAddress(args.owner)
+    const agentName = args.name.toUpperCase()
     const provider = new ethers.JsonRpcProvider(args.rpc)
 
     console.log('\n========================================')
@@ -433,13 +525,11 @@ async function main() {
         console.log(`   Already deployed: ${rolesAddress}`)
     }
 
-    // Step 4: Configure everything via MultiSend
+    // Step 4: Configure Roles via MultiSend (no ownership transfer yet)
     const isModuleEnabled = await safe.isModuleEnabled(rolesAddress)
-    const owners = await safe.getOwners()
-    const ownerIsHuman = owners[0].toLowerCase() === owner.toLowerCase()
 
-    if (!isModuleEnabled || !ownerIsHuman) {
-        console.log('\n--- Step 4: Configure Roles & Transfer Ownership ---')
+    if (!isModuleEnabled || state.step === STEPS.ROLES_DEPLOYED) {
+        console.log('\n--- Step 4: Configure Roles ---')
         console.log('   Batching configuration via MultiSend...')
 
         const safeInterface = new ethers.Interface(SAFE_ABI)
@@ -456,7 +546,7 @@ async function main() {
             })
         }
 
-        // Scope and allow Aerodrome Universal Router (handles both V2 and CL pools)
+        // Scope and allow Aerodrome Universal Router
         console.log('   - scopeTarget(AeroUniversalRouter)')
         transactions.push({
             to: rolesAddress,
@@ -496,21 +586,6 @@ async function main() {
             data: rolesInterface.encodeFunctionData('setDefaultRole', [agentWallet.address, ROLE_KEY]),
         })
 
-        // Transfer ownership: add human owner, remove agent
-        if (!ownerIsHuman) {
-            console.log(`   - addOwnerWithThreshold(${owner.slice(0, 10)}...)`)
-            transactions.push({
-                to: safeAddress,
-                data: safeInterface.encodeFunctionData('addOwnerWithThreshold', [owner, 1]),
-            })
-
-            console.log(`   - removeOwner(${agentWallet.address.slice(0, 10)}...)`)
-            transactions.push({
-                to: safeAddress,
-                data: safeInterface.encodeFunctionData('removeOwner', [owner, agentWallet.address, 1]),
-            })
-        }
-
         console.log(`\n   Executing ${transactions.length} operations in single MultiSend...`)
         const multiSendData = encodeMultiSend(transactions)
 
@@ -526,41 +601,18 @@ async function main() {
         console.log('   Already configured!')
     }
 
-    // Verify final state
-    const finalOwners = await safe.getOwners()
-    const moduleEnabled = await safe.isModuleEnabled(rolesAddress)
-
-    if (finalOwners.length !== 1 || finalOwners[0].toLowerCase() !== owner.toLowerCase()) {
-        console.error(`\n❌ Error: Ownership transfer failed!`)
-        console.error(`   Expected owner: ${owner}`)
-        console.error(`   Actual owners: ${finalOwners.join(', ')}`)
-        process.exit(1)
-    }
-
-    if (!moduleEnabled) {
-        console.error(`\n❌ Error: Module not enabled!`)
-        process.exit(1)
-    }
-
     // Step 5: Register with backend
     let registration = state.registration
-    if (state.step !== STEPS.REGISTERED && state.step !== STEPS.COMPLETE) {
+    if (!registration) {
         console.log('\n--- Step 5: Register with Backend ---')
-
-        // Check if already registered
         const existingAgent = await checkExistingAgent(agentWallet.address.toLowerCase())
         if (existingAgent && !existingAgent.error && !existingAgent.needsRegistration) {
             console.log('   Already registered!')
             registration = existingAgent
         } else {
             try {
-                // Get registration challenge JWT from API
                 const jwt = await getRegistrationChallenge(agentWallet.address.toLowerCase())
-
-                // Get block info for registration
                 const block = await provider.getBlock('latest')
-
-                // Register with signed challenge
                 registration = await registerAgent(agentWallet, jwt, {
                     owner,
                     safe: safeAddress,
@@ -572,22 +624,230 @@ async function main() {
                     evt_block_number: state.safeBlockNumber?.toString() || block.number.toString(),
                     evt_block_time: state.safeBlockTime || new Date(Number(block.timestamp) * 1000).toISOString(),
                 })
-
                 console.log(`   Registered! Agent ID: ${registration.id || 'N/A'}`)
                 if (registration.referralCode) {
                     console.log(`   Referral code: ${registration.referralCode}`)
                 }
-
-                state = { ...state, step: STEPS.REGISTERED, registration }
+                state = { ...state, registration }
                 saveState(args.configDir, state)
             } catch (error) {
                 console.log(`   Warning: Registration failed: ${error.message}`)
-                console.log('   Agent will still work, but not tracked in database.')
+                console.log('   Continuing setup...')
             }
         }
     } else {
-        console.log('\n--- Step 5: Registration ---')
+        console.log('\n--- Step 5: Backend ---')
         console.log('   Already registered!')
+    }
+
+    // Step 6: Register CNS name (via Safe — backend signs with account=safe)
+    let cnsTokenId = state.cnsTokenId
+    if (!cnsTokenId) {
+        console.log('\n--- Step 6: Register CNS Name ---')
+        const cns = new ethers.Contract(CONTRACTS.CNS, CNS_ABI, provider)
+
+        // Check if Safe already owns a CNS token (from interrupted previous run)
+        const safeCnsBalance = await cns.balanceOf(safeAddress)
+        if (safeCnsBalance > 0n) {
+            const existingTokenId = await cns.tokenOfOwnerByIndex(safeAddress, 0)
+            const existingName = await cns.tokenName(existingTokenId)
+            cnsTokenId = Number(existingTokenId)
+            console.log(`   Safe already owns CNS name: ${existingName} (Token ID: ${cnsTokenId})`)
+            state = { ...state, cnsTokenId }
+            saveState(args.configDir, state)
+        } else {
+            // Check if name is available on-chain
+            const available = await cns.isNameAvailable(agentName)
+            if (!available) {
+                console.error(`   Error: Name "${agentName}" is already taken.`)
+                process.exit(1)
+            }
+
+            const fee = await cns.fee()
+            console.log(`   Name: ${agentName}`)
+            console.log(`   Fee: ${ethers.formatEther(fee)} ETH`)
+
+            try {
+                console.log('   Authenticating with backend...')
+                const cookies = await authenticateAgent(agentWallet)
+
+                console.log('   Requesting CNS signature...')
+                const sigResponse = await getCnsSignature(cookies, agentName)
+
+                // Backend wraps in { signature: { signature, data, expiresAt } }
+                const sig = sigResponse.signature || sigResponse
+                if (!sig.signature || !sig.data || sig.expiresAt === undefined) {
+                    console.log('   Backend response:', JSON.stringify(sigResponse, null, 2))
+                    throw new Error('Backend returned incomplete signature data')
+                }
+
+                console.log(`   Signature received (expires: ${sig.expiresAt})`)
+                console.log('   Registering on-chain via Safe...')
+
+                // Encode register() call — must go through Safe since backend
+                // signs with account=safe address (msg.sender must be Safe)
+                const cnsInterface = new ethers.Interface(CNS_ABI)
+                const registerData = cnsInterface.encodeFunctionData('register', [
+                    [sig.signature, sig.data, BigInt(sig.expiresAt)],
+                ])
+
+                const receipt = await execSafeTransaction(
+                    safe, CONTRACTS.CNS, fee, registerData, 0, agentWallet
+                )
+                console.log(`   Transaction: ${receipt.hash}`)
+
+                const nameRegTopic = ethers.id('NameRegistered(address,uint256,string)')
+                const nameRegEvent = receipt.logs.find(log => log.topics[0] === nameRegTopic)
+                if (nameRegEvent) {
+                    cnsTokenId = Number(nameRegEvent.topics[2])
+                }
+
+                console.log(`   CNS registered! Name: ${agentName}, Token ID: ${cnsTokenId || 'N/A'}`)
+                state = { ...state, cnsTokenId }
+                saveState(args.configDir, state)
+            } catch (error) {
+                console.log(`   Warning: CNS registration failed: ${error.message}`)
+                console.log('   Continuing setup...')
+            }
+        }
+    } else {
+        console.log('\n--- Step 6: CNS Name ---')
+        console.log(`   Already registered! Token ID: ${cnsTokenId}`)
+    }
+
+    // Step 7: Transfer ownership (add human owner, remove agent)
+    const currentOwners = await safe.getOwners()
+    const ownerIsHuman = currentOwners.some(o => o.toLowerCase() === owner.toLowerCase())
+    const agentIsOwner = currentOwners.some(o => o.toLowerCase() === agentWallet.address.toLowerCase())
+
+    if (agentIsOwner) {
+        console.log('\n--- Step 7: Transfer Ownership ---')
+        const safeInterface = new ethers.Interface(SAFE_ABI)
+        const transactions = []
+
+        if (!ownerIsHuman) {
+            console.log(`   - addOwnerWithThreshold(${owner.slice(0, 10)}...)`)
+            transactions.push({
+                to: safeAddress,
+                data: safeInterface.encodeFunctionData('addOwnerWithThreshold', [owner, 1]),
+            })
+        }
+
+        console.log(`   - removeOwner(${agentWallet.address.slice(0, 10)}...)`)
+        // prevOwner is the owner that points to the agent in the linked list
+        // After addOwner, the new owner is at the front, so prevOwner = owner
+        const prevOwner = ownerIsHuman ? owner : owner
+        transactions.push({
+            to: safeAddress,
+            data: safeInterface.encodeFunctionData('removeOwner', [prevOwner, agentWallet.address, 1]),
+        })
+
+        const multiSendData = encodeMultiSend(transactions)
+        const receipt = await execSafeTransaction(safe, CONTRACTS.MultiSend, 0n, multiSendData, 1, agentWallet)
+        console.log(`   Transaction: ${receipt.hash}`)
+        console.log('   Confirmed (3 blocks)')
+        console.log('   Ownership transferred!')
+    } else {
+        console.log('\n--- Step 7: Ownership ---')
+        console.log('   Already transferred!')
+    }
+
+    // Verify ownership
+    const finalOwners = await safe.getOwners()
+    if (finalOwners.length !== 1 || finalOwners[0].toLowerCase() !== owner.toLowerCase()) {
+        console.error(`\n   Warning: Unexpected owners: ${finalOwners.join(', ')}`)
+    }
+
+    // Step 8: Register on ERC-8004 Identity Registry
+    // Agent mints the identity NFT, then transfers it to the Safe
+    let erc8004AgentId = state.erc8004AgentId
+    if (state.step !== STEPS.ERC8004_REGISTERED && state.step !== STEPS.COMPLETE) {
+        console.log('\n--- Step 8: Register on ERC-8004 ---')
+
+        const identityRegistry = new ethers.Contract(
+            CONTRACTS.IdentityRegistry,
+            IDENTITY_REGISTRY_ABI,
+            agentWallet
+        )
+
+        // Phase 1: Mint identity NFT (if not already done)
+        if (!erc8004AgentId) {
+            const agentRegistration = {
+                type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
+                name: 'Clawlett',
+                description: `Autonomous MEV-protected token swap agent on Base. Safe: ${safeAddress}`,
+                image: '',
+                services: [
+                    {
+                        name: 'web',
+                        endpoint: API_BASE_URL,
+                    },
+                ],
+                x402Support: false,
+                active: true,
+                registrations: [],
+            }
+
+            const agentURI = 'data:application/json;base64,' + Buffer.from(JSON.stringify(agentRegistration)).toString('base64')
+
+            console.log('   Registering agent identity on-chain...')
+            const tx = await identityRegistry.register(agentURI)
+            console.log(`   Transaction: ${tx.hash}`)
+            console.log('   Waiting for 3 confirmations...')
+            const receipt = await tx.wait(3)
+
+            // Parse Registered event to get agentId
+            const registeredTopic = ethers.id('Registered(uint256,string,address)')
+            const registeredEvent = receipt.logs.find(log => log.topics[0] === registeredTopic)
+            if (registeredEvent) {
+                erc8004AgentId = Number(registeredEvent.topics[1])
+            } else {
+                // Fallback: parse from ERC-721 Transfer event
+                const transferTopic = ethers.id('Transfer(address,address,uint256)')
+                const transferEvent = receipt.logs.find(log => log.topics[0] === transferTopic)
+                if (transferEvent) {
+                    erc8004AgentId = Number(transferEvent.topics[3])
+                }
+            }
+
+            if (!erc8004AgentId) {
+                console.log('   Warning: Could not parse agentId from events, skipping.')
+                state = { ...state, step: STEPS.ERC8004_REGISTERED }
+                saveState(args.configDir, state)
+            } else {
+                console.log(`   Minted identity NFT #${erc8004AgentId}`)
+                // Save immediately so we can resume transfer if interrupted
+                state = { ...state, erc8004AgentId }
+                saveState(args.configDir, state)
+            }
+        }
+
+        // Phase 2: Transfer NFT to Safe (if agent still owns it)
+        if (erc8004AgentId) {
+            const nftOwner = await identityRegistry.ownerOf(erc8004AgentId)
+            if (nftOwner.toLowerCase() === agentWallet.address.toLowerCase()) {
+                console.log(`   Transferring identity NFT to Safe...`)
+                const tx = await identityRegistry.transferFrom(agentWallet.address, safeAddress, erc8004AgentId)
+                console.log(`   Transaction: ${tx.hash}`)
+                console.log('   Waiting for 3 confirmations...')
+                await tx.wait(3)
+                console.log(`   Safe now owns ERC-8004 ID: ${erc8004AgentId}`)
+            } else if (nftOwner.toLowerCase() === safeAddress.toLowerCase()) {
+                console.log(`   Safe already owns ERC-8004 ID: ${erc8004AgentId}`)
+            } else {
+                console.log(`   Warning: NFT #${erc8004AgentId} owned by unexpected address: ${nftOwner}`)
+            }
+        }
+
+        state = { ...state, step: STEPS.ERC8004_REGISTERED, erc8004AgentId }
+        saveState(args.configDir, state)
+    } else {
+        console.log('\n--- Step 8: ERC-8004 Identity ---')
+        if (erc8004AgentId) {
+            console.log(`   Already registered! ID: ${erc8004AgentId}`)
+        } else {
+            console.log('   Already registered!')
+        }
     }
 
     // Save final config
@@ -598,9 +858,12 @@ async function main() {
         safe: safeAddress,
         roles: rolesAddress,
         roleKey: ROLE_KEY,
+        name: agentName,
+        cnsTokenId: cnsTokenId || null,
+        erc8004AgentId: erc8004AgentId || null,
         contracts: CONTRACTS,
         createdAt: new Date().toISOString(),
-        cookies: registration?.cookies, // Session cookies for API calls
+        cookies: registration?.cookies,
     }
     saveConfig(args.configDir, config)
     clearState(args.configDir)
