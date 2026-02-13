@@ -1,14 +1,18 @@
 # Clawlett
 
-Secure token swaps via Aerodrome on **Base Mainnet**, powered by Safe + Zodiac Roles.
+Secure token swaps on **Base Mainnet**, powered by Safe + Zodiac Roles.
+
+Swap engine: **CoW Protocol** (MEV-protected batch auctions).
 
 > **Network: Base Mainnet (Chain ID: 8453)**
 
 ## Overview
 
 This skill enables autonomous token swaps through a Gnosis Safe. The agent operates through Zodiac Roles which restricts operations to:
-- Swapping tokens via Aerodrome Router
-- Approving tokens only for the Aerodrome Router
+- Swapping tokens via CoW Protocol (MEV-protected)
+- Approving tokens for CoW Vault Relayer
+- Presigning CoW orders via ZodiacHelpers delegatecall
+- Wrapping ETH to WETH and unwrapping WETH to ETH via ZodiacHelpers
 - Sending swapped tokens only back to the Safe (no draining)
 
 ## Capabilities
@@ -16,42 +20,70 @@ This skill enables autonomous token swaps through a Gnosis Safe. The agent opera
 | Action | Autonomous | Notes |
 |--------|------------|-------|
 | Check balances | ✅ | ETH and any ERC20 on Base Mainnet |
-| Get swap quote | ✅ | Via Aerodrome Router |
+| Get swap quote | ✅ | Via CoW Protocol |
 | Swap tokens | ✅ | Any pair with liquidity |
-| Approve tokens | ✅ | Only for Aerodrome Router |
+| Wrap/Unwrap ETH | ✅ | ETH ↔ WETH via ZodiacHelpers |
+| Approve tokens | ✅ | Only for CoW Vault Relayer |
 | Transfer funds | ❌ | Blocked by Roles |
 
+## Agent Name (CNS)
+
+Each agent must register a **unique name** via the Clawlett Name Service (CNS). This name is the agent's app-wide identifier — no two agents can share the same name. The name is minted as an NFT on Base.
+
+Choose a name during initialization with `--name`. Once registered, it cannot be changed.
+
 ## Token Safety
+
+### Verified Tokens
 
 Protected tokens can ONLY resolve to verified Base Mainnet addresses:
 
 | Token | Verified Address |
-|-------|-----------------|
-| ETH | Native ETH (use `0x0000000000000000000000000000000000000000` for swaps) |
+|-------|--------------------|
+| ETH | Native ETH (`0x0000000000000000000000000000000000000000`) |
 | WETH | `0x4200000000000000000000000000000000000006` |
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 | USDT | `0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2` |
 | DAI | `0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb` |
+| USDS | `0x820C137fa70C8691f0e44Dc420a5e53c168921Dc` |
 | AERO | `0x940181a94A35A4569E4529A3CDfB74e38FD98631` |
 | cbBTC | `0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf` |
-| BID | `0xa1832f7F4e534aE557f9B5AB76dE54B1873e498B` |
+| VIRTUAL | `0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b` |
+| DEGEN | `0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed` |
+| BRETT | `0x532f27101965dd16442E59d40670FaF5eBB142E4` |
+| TOSHI | `0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4` |
+| WELL | `0xA88594D404727625A9437C3f886C7643872296AE` |
+| BID | `0xa1832f7f4e534ae557f9b5ab76de54b1873e498b` |
 
 If a scam token impersonates these symbols, the agent will detect and warn.
 
+### Unverified Token Search
+
+Tokens not in the verified list are searched via DexScreener (Base pairs). Search results include:
+- Contract address (on-chain verified)
+- 24h trading volume and liquidity
+- DEX where the token trades
+
+**Agent behavior for unverified tokens:**
+- Always display the warning with contract address, volume, and liquidity
+- Ask the user to confirm before proceeding with the swap
+- Never silently swap an unverified token
+
 ## Setup
 
-1. Owner provides their wallet address
+1. Owner provides their wallet address and chooses an **agent name**
 2. Agent generates keypair → **Owner sends 0.001 ETH on Base Mainnet** to agent for gas
 3. Agent deploys Safe on Base Mainnet (owner as sole owner)
-4. Agent deploys Zodiac Roles with Aerodrome permissions
-5. Agent removes itself as Safe owner (keeps Roles access)
-6. **Owner funds Safe on Base Mainnet** with tokens to trade
+4. Agent registers with backend and mints CNS name on-chain
+5. Agent deploys Zodiac Roles with swap permissions
+6. Agent removes itself as Safe owner (keeps Roles access)
+7. **Owner funds Safe on Base Mainnet** with tokens to trade
 
 ## Usage
 
 ### Initialize
 ```
-Initialize my wallet with owner 0x123...
+Initialize my wallet with owner 0x123... and name MYAGENT
 ```
 
 ### Check Balance
@@ -65,38 +97,28 @@ How much USDC do I have?
 Swap 0.1 ETH for USDC
 Swap 100 USDC for ETH
 Exchange 50 DAI to AERO
-Trade my DEGEN for BRETT
 ```
 
-**Example confirmation prompt:**
+CoW Protocol swaps are MEV-protected. ETH is automatically wrapped to WETH when needed (CoW requires ERC20s). Wrapping is bundled into the swap transaction.
+
+### Wrap/Unwrap ETH
 ```
-Swap Details (Base Mainnet)
-─────────────────────────────
-From:     0.1 ETH
-          0x4200000000000000000000000000000000000006 (WETH)
-
-To:       ~250.45 USDC
-          0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (USDC)
-
-Rate:     1 ETH = 2,504.50 USDC
-Minimum:  237.93 USDC (after 5% slippage)
-Impact:   <0.01%
-
-Proceed with swap? (yes/no)
+Wrap 0.5 ETH to WETH
+Unwrap 0.5 WETH to ETH
 ```
+
+Wrapping and unwrapping is done via ZodiacHelpers delegatecall. When swapping from ETH via CoW, wrapping is handled automatically as part of the swap transaction.
 
 The agent will:
 1. Resolve token symbols (with scam protection)
-2. Get quote from Aerodrome
+2. Get quote from CoW Protocol
 3. **Display swap details for confirmation:**
    - Token symbols (e.g., ETH → USDC)
    - Token addresses (verified Base Mainnet contracts)
    - Input amount (what you're selling)
    - Output amount (estimated amount you'll receive)
-   - Minimum output (after slippage)
-   - Slippage tolerance (default: 5%, range 0-50% via 0-0.5)
-   - Exchange rate
-   - Price impact (if significant)
+   - Fee breakdown
+   - ETH wrap amount (if applicable)
 4. Ask for explicit user confirmation
 5. Execute via Safe + Roles
 
@@ -104,28 +126,27 @@ The agent will:
 
 | Script | Description |
 |--------|-------------|
-| `initialize.js` | Deploy Safe + Roles with Aerodrome permissions |
-| `swap.js` | Swap tokens via Aerodrome |
+| `initialize.js` | Deploy Safe + Roles, register CNS name |
+| `swap.js` | Swap tokens via CoW Protocol (MEV-protected) |
 | `balance.js` | Check ETH and token balances |
 
 ### Examples
 
 ```bash
-# Initialize
-node skills/wallet/scripts/initialize.js --owner 0x123...
+# Initialize (name is unique, app-wide identifier)
+node scripts/initialize.js --owner 0x123... --name MYAGENT
 
 # Check balance
-node skills/wallet/scripts/balance.js
-node skills/wallet/scripts/balance.js --token USDC
+node scripts/balance.js
+node scripts/balance.js --token USDC
 
-# Get swap quote
-node skills/wallet/scripts/swap.js --from ETH --to USDC --amount 0.1
-
-# Execute swap
-node skills/wallet/scripts/swap.js --from ETH --to USDC --amount 0.1 --execute
+# Swap tokens (CoW Protocol, MEV-protected)
+node scripts/swap.js --from ETH --to USDC --amount 0.1
+node scripts/swap.js --from USDC --to WETH --amount 100 --execute
+node scripts/swap.js --from USDC --to DAI --amount 50 --execute --timeout 600
 
 # With custom slippage (0-0.5 range, e.g., 0.05 = 5%)
-node skills/wallet/scripts/swap.js --from ETH --to USDC --amount 0.1 --slippage 0.03 --execute
+node scripts/swap.js --from ETH --to USDC --amount 0.1 --slippage 0.03 --execute
 ```
 
 ## Configuration
@@ -134,12 +155,14 @@ Scripts read from `config/wallet.json` (configured for Base Mainnet):
 
 ```json
 {
-  "chainId": 8453,  // Base Mainnet
+  "chainId": 8453,
   "owner": "0x...",
   "agent": "0x...",
   "safe": "0x...",
   "roles": "0x...",
-  "roleKey": "0x..."
+  "roleKey": "0x...",
+  "name": "MYAGENT",
+  "cnsTokenId": 1
 }
 ```
 
@@ -148,25 +171,42 @@ Scripts read from `config/wallet.json` (configured for Base Mainnet):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BASE_RPC_URL` | `https://mainnet.base.org` | Base Mainnet RPC endpoint |
-| `WALLET_CONFIG_DIR` | `skills/wallet/config` | Config directory |
+| `WALLET_CONFIG_DIR` | `config` | Config directory |
 
 ## Contracts (Base Mainnet)
 
 | Contract | Address | Description |
 |----------|---------|-------------|
 | Safe Singleton | `0x3E5c63644E683549055b9Be8653de26E0B4CD36E` | Safe L2 impl |
-| Aerodrome Universal Router | `0x6Df1c91424F79E40E33B1A48F0687B666bE71075` | All swaps (V2 + CL) |
-| ZodiacHelpers | `0xc235D2475E4424F277B53D19724E2453a8686C54` | Token approvals + swaps via delegatecall |
+| CoW Settlement | `0x9008D19f58AAbD9eD0D60971565AA8510560ab41` | CoW Protocol settlement |
+| CoW Vault Relayer | `0xC92E8bdf79f0507f65a392b0ab4667716BFE0110` | CoW token allowance target |
+| ZodiacHelpers | `0x9699a24346464F1810a2822CEEE89f715c65F629` | Approvals, CoW presign, WETH wrap/unwrap via delegatecall |
 | Safe Factory | `0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2` | Safe deployer |
 | Roles Singleton | `0x9646fDAD06d3e24444381f44362a3B0eB343D337` | Zodiac Roles |
 | Module Factory | `0x000000000000aDdB49795b0f9bA5BC298cDda236` | Module deployer |
+| CNS | `0x299319e0BC8d67e11AD8b17D4d5002033874De3a` | Clawlett Name Service (unique agent names) |
+
+## Updating
+
+When the user says **"update to latest"**, follow this procedure:
+
+1. `git fetch --tags origin` in the clawlett repo
+2. Read current version from `scripts/package.json`
+3. Identify the latest git tag (e.g., `git tag -l --sort=-v:refname | head -1`)
+4. Read **[MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md)** for the migration path between current and latest version
+5. Show the user: current version, new version, summary of changes, and whether on-chain steps are required
+6. **ASK the user: "Do you want to proceed with this update?"** — do NOT proceed without explicit confirmation
+7. If confirmed: `git checkout <tag>`, then walk through each migration step with the user
+
+Some updates are code-only (just checkout the new tag). Others require on-chain transactions signed by the Safe owner (e.g., updating Roles permissions for a new ZodiacHelpers contract). The migration guide specifies which.
 
 ## Security Model
 
 1. **Safe holds all funds** - Agent wallet only has gas
 2. **Zodiac Roles restricts operations**:
-   - Can only call Aerodrome Universal Router
-   - Swap `to` parameter scoped to Safe address only
-   - Can only approve tokens for Aerodrome Router
+   - Can only interact with ZodiacHelpers
+   - ZodiacHelpers scoped with `allowTarget` (Send + DelegateCall)
+   - Can only approve tokens for CoW Vault Relayer
 3. **No transfer/withdraw** - Agent cannot move funds out
 4. **Scam protection** - Common tokens resolve to verified addresses only
+5. **MEV protection** - CoW Protocol batches orders, preventing sandwich attacks and other MEV extraction
