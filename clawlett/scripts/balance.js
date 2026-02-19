@@ -39,7 +39,24 @@ const ERC20_ABI = [
     'function decimals() view returns (uint8)',
     'function balanceOf(address) view returns (uint256)',
 ]
-
+async function mapWithConcurrency(items, limit, fn) {
+      const results = new Array(items.length)
+      let index = 0
+  
+      async function worker() {
+          while (index < items.length) {
+              const current = index++
+              results[current] = await fn(items[current], current)
+          }
+      }
+  
+      const workers = []
+      for (let i = 0; i < Math.min(limit, items.length); i++) {
+          workers.push(worker())
+      }
+      await Promise.all(workers)
+      return results
+  }
 function loadConfig(configDir) {
     const configPath = path.join(configDir, 'wallet.json')
     if (!fs.existsSync(configPath)) {
@@ -143,12 +160,22 @@ async function main() {
     const out = { safe: safeAddress, eth: null, tokens: [] }
 
     // Always show ETH
-    const ethBalance = await provider.getBalance(safeAddress)
-    out.eth = { symbol: 'ETH', balance: ethBalance.toString(), formatted: formatAmount(ethBalance, 18, 'ETH') }
-    if (!args.json) {
-        console.log(`ETH:    ${formatAmount(ethBalance, 18, 'ETH')}`)
-    }
-    console.log(`ETH:    ${formatAmount(ethBalance, 18, 'ETH')}`)
+    const entries = Object.entries(VERIFIED_TOKENS).filter(([symbol]) => symbol !== 'ETH')
+          const balances = await mapWithConcurrency(entries, 4, async ([symbol, address]) => {
+              try {
+                  const { balance, decimals } = await getTokenBalance(provider, safeAddress, address)
+                  return { symbol, balance, decimals }
+              } catch {
+                  return null
+              }
+          })
+  
+          for (const result of balances) {
+              if (!result) continue
+              if (result.balance > 0n) {
+                  console.log(`${result.symbol.padEnd(8)} ${formatAmount(result.balance, result.decimals, result.symbol)}`)
+              }
+          }
 
     if (args.all) {
         // Show all verified tokens
